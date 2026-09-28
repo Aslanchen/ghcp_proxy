@@ -1222,7 +1222,8 @@ class ProxyClientConfigService:
         model_names = configured_model_names | live_model_names
         # Filter by what the upstream Copilot plan actually exposes via /models.
         # If the capability fetch returned nothing (auth/network blip), fall
-        # back to the full pricing list rather than wiping the catalog.
+        # back to the configured pricing list for non-Excel models only; Excel
+        # aliases require positive entitlement evidence before being advertised.
         if available_ids:
             filtered = {
                 name
@@ -1233,8 +1234,11 @@ class ProxyClientConfigService:
                     and remapped_targets.get(name) in available_ids
                 )
             }
-            if filtered:
-                model_names = filtered
+            model_names = filtered
+        else:
+            model_names = {
+                name for name in model_names if not name.endswith("-excel")
+            }
         return sorted(model_names, key=lambda model_name: (family_key(model_name), preferred_order.get(model_name, 0), model_name))
 
     def _catalog_remap_targets(self, routing_settings: Mapping[str, object]) -> dict[str, str]:

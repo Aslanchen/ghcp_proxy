@@ -34,6 +34,11 @@ class ReasoningLevelTests(unittest.TestCase):
             ["low", "medium", "high", "xhigh", "max"],
         )
 
+    def test_empty_capability_fallback_does_not_expose_excel_aliases(self):
+        model_names = self.service._sorted_catalog_model_names(set(), {})
+
+        self.assertFalse(any(name.endswith("-excel") for name in model_names))
+
 
 if __name__ == "__main__":
     unittest.main()
