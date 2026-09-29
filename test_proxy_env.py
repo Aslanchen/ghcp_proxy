@@ -7,6 +7,41 @@ import proxy
 
 
 class ProxyEnvironmentTests(unittest.TestCase):
+    def test_model_capability_fetch_uses_runtime_enterprise_ca_context(self):
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"data": [{"id": "gpt-5.6-luna"}]}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def get(self, _url, *, headers):
+                self.headers = headers
+                return FakeResponse()
+
+        runtime_context = object()
+        with mock.patch.object(proxy, "_COPILOT_MODEL_CAPS_CACHE", {"key": None, "ts": 0.0, "data": {}}), \
+             mock.patch.object(proxy.auth, "get_api_base", return_value="https://copilot.example"), \
+             mock.patch.object(proxy.auth, "get_api_key", return_value="token"), \
+             mock.patch.object(proxy.format_translation, "build_copilot_headers", return_value={}), \
+             mock.patch.object(proxy.copilot_sdk_upstream, "_runtime_ssl_context", return_value=runtime_context), \
+             mock.patch.object(proxy.httpx, "Client", side_effect=FakeClient) as client_factory:
+            capabilities = proxy.fetch_copilot_model_capabilities()
+
+        self.assertIs(client_factory.call_args.kwargs["verify"], runtime_context)
+        self.assertTrue(client_factory.call_args.kwargs["trust_env"])
+        self.assertIn("gpt-5.6-luna-excel", capabilities)
+
     def test_apply_upstream_proxy_env_aliases_sets_standard_proxy_keys(self):
         with mock.patch.dict(
             os.environ,
