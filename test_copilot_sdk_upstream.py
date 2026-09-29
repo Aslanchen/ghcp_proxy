@@ -1477,9 +1477,7 @@ class CopilotSdkEventTests(unittest.IsolatedAsyncioTestCase):
         prepared = dashboard._prepare_usage_event(event)
         self.assertEqual(prepared["input_tokens"], 10_189)
         self.assertEqual(prepared["total_tokens"], 11_125)
-        self.assertEqual(prepared["request_context_tokens"], 66_023)
-
-    def test_dashboard_session_uses_peak_context_without_summing_cached_prompts(self):
+    def test_dashboard_session_sums_fresh_tokens_without_summing_cached_prompts(self):
         import dashboard
 
         events = [
@@ -1510,7 +1508,7 @@ class CopilotSdkEventTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         usage = dashboard.collect_local_dashboard_usage(events)
-        self.assertEqual(usage["recent_sessions"][0]["total_tokens"], 62_200)
+        self.assertEqual(usage["recent_sessions"][0]["total_tokens"], 6_300)
         self.assertEqual(usage["month_rows"][0]["total_tokens"], 6_300)
 
     def test_cache_creation_is_part_of_fresh_input_but_not_double_billed(self):

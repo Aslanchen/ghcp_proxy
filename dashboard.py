@@ -656,29 +656,6 @@ def _usage_display_total_tokens(usage: dict, *, input_tokens: int, output_tokens
     return max(0, gross_input_tokens) + max(0, output_tokens)
 
 
-def _usage_request_context_tokens(usage: dict, *, output_tokens: int) -> int:
-    """Return gross tokens in one model request for session context display.
-
-    Session rows should not sum the same cached prompt on every turn, but they
-    also must not collapse to fresh-only pricing tokens.  Track the largest
-    gross request instead, which represents the session's peak context.
-    """
-    raw_input = _coerce_int(usage.get("input_tokens"), default=None)
-    fresh_input = usage.get("fresh_input_tokens")
-    if fresh_input is None:
-        fresh_input = usage.get("billable_input_tokens")
-    cached_input = max(0, _coerce_int(usage.get("cached_input_tokens")))
-
-    candidates = []
-    if raw_input is not None:
-        candidates.append(max(0, raw_input))
-    if fresh_input is not None:
-        candidates.append(max(0, _coerce_int(fresh_input)) + cached_input)
-    if not candidates:
-        candidates.append(cached_input + max(0, _coerce_int(usage.get("cache_creation_input_tokens"))))
-    return max(candidates) + max(0, output_tokens)
-
-
 def _prepare_usage_event(event: dict) -> dict | None:
     """Compute the expensive, event-local dashboard fields once.
 
@@ -704,7 +681,6 @@ def _prepare_usage_event(event: dict) -> dict | None:
     input_tokens = _usage_display_input_tokens(usage)
     output_tokens = _coerce_int(usage.get("output_tokens"))
     total_tokens = _usage_display_total_tokens(usage, input_tokens=input_tokens, output_tokens=output_tokens)
-    request_context_tokens = _usage_request_context_tokens(usage, output_tokens=output_tokens)
     cached_input_tokens = _coerce_int(usage.get("cached_input_tokens"))
     cache_creation_tokens = _coerce_int(usage.get("cache_creation_input_tokens"))
     reasoning_output_tokens = _coerce_int(usage.get("reasoning_output_tokens"))
@@ -724,7 +700,6 @@ def _prepare_usage_event(event: dict) -> dict | None:
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
-        "request_context_tokens": request_context_tokens,
         "cached_input_tokens": cached_input_tokens,
         "cache_creation_tokens": cache_creation_tokens,
         "reasoning_output_tokens": reasoning_output_tokens,
@@ -935,11 +910,6 @@ class _DashboardUsageAccumulator:
             if session_bucket.get("session_kind") in {None, "", "unknown"} and descriptor.get("session_kind"):
                 session_bucket["session_kind"] = descriptor["session_kind"]
             _ingest_usage_event(session_bucket, event, prepared)
-            session_bucket["_peak_request_context_tokens"] = max(
-                int(session_bucket.get("_peak_request_context_tokens") or 0),
-                int(prepared.get("request_context_tokens") or 0),
-            )
-
             day_bucket = self.day_buckets.setdefault(source, {}).setdefault(
                 day_key, _new_usage_aggregate_bucket()
             )
@@ -970,7 +940,6 @@ class _DashboardUsageAccumulator:
                             bucket,
                             source,
                             session_id=bucket.get("session_id"),
-                            session_rollup=True,
                         ),
                     )
                 )
@@ -1015,7 +984,6 @@ def _finalize_usage_bucket(
     *,
     session_id: str | None = None,
     month: str | None = None,
-    session_rollup: bool = False,
 ) -> dict:
     if not isinstance(bucket, dict):
         return {}
@@ -1045,11 +1013,7 @@ def _finalize_usage_bucket(
         "projectPath": bucket.get("project_path"),
         "inputTokens": bucket.get("input_tokens", 0),
         "outputTokens": bucket.get("output_tokens", 0),
-        "totalTokens": (
-            bucket.get("_peak_request_context_tokens", 0)
-            if session_rollup
-            else bucket.get("total_tokens", 0)
-        ),
+        "totalTokens": bucket.get("total_tokens", 0),
         "requestCount": bucket.get("request_count", 0),
         "costBreakdown": {
             "input_fresh": round(_coerce_float(cost_breakdown.get("input_fresh")), 6),
@@ -1118,11 +1082,6 @@ def _aggregate_usage_event_buckets(
         if session_bucket.get("session_kind") in {None, "", "unknown"} and descriptor.get("session_kind"):
             session_bucket["session_kind"] = descriptor.get("session_kind")
         _ingest_usage_event(session_bucket, event, prepared)
-        session_bucket["_peak_request_context_tokens"] = max(
-            int(session_bucket.get("_peak_request_context_tokens") or 0),
-            int(prepared.get("request_context_tokens") or 0),
-        )
-
     return source_month_buckets, source_session_buckets
 
 
@@ -1153,7 +1112,6 @@ def collect_local_dashboard_usage(
                         bucket,
                         source,
                         session_id=bucket.get("session_id"),
-                        session_rollup=True,
                     ),
                 )
             )
