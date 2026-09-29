@@ -107,12 +107,14 @@ Use one of the Excel model aliases to select this route:
 
 ```text
 gpt-6-astra-excel
+gpt-6-sol-excel
+gpt-6-luna-excel
 gpt-5.6-luna-excel
 gpt-5.6-terra-excel
 gpt-5.6-sol-excel
 ```
 
-The aliases support `low`, `medium`, `high`, and `xhigh` reasoning effort. `x-high` is accepted as an alias for `xhigh`.
+GPT-6 Sol/Luna and GPT-5.6 Excel aliases support `low`, `medium`, `high`, and `xhigh` reasoning effort. GPT-6 Astra supports `medium`, `high`, and `xhigh`. `x-high` is accepted as an alias for `xhigh`.
 
 Models without an `-excel` alias continue to use GitHub Copilot.
 
@@ -272,6 +274,8 @@ Make sure the selected model uses an `-excel` alias:
 
 ```text
 gpt-6-astra-excel
+gpt-6-sol-excel
+gpt-6-luna-excel
 gpt-5.6-luna-excel
 gpt-5.6-terra-excel
 gpt-5.6-sol-excel

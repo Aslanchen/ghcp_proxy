@@ -161,6 +161,8 @@ class ExcelUpstreamTests(unittest.TestCase):
     def test_each_excel_alias_routes_to_matching_upstream_model(self):
         expected = {
             "gpt-6-astra-excel": "gpt-6-astra",
+            "gpt-6-sol-excel": "gpt-6-sol",
+            "gpt-6-luna-excel": "gpt-6-luna",
             "gpt-5.6-luna-excel": "gpt-5.6-luna",
             "gpt-5.6-terra-excel": "gpt-5.6-terra",
             "gpt-5.6-sol-excel": "gpt-5.6-sol",
@@ -173,7 +175,29 @@ class ExcelUpstreamTests(unittest.TestCase):
                 self.assertEqual(body["model"], upstream)
                 self.assertEqual(body["model_selection"], "explicit")
                 self.assertTrue(excel_upstream.is_excel_model(requested))
+                self.assertFalse(excel_upstream.is_excel_model(upstream))
         self.assertFalse(excel_upstream.is_excel_model("gpt-excel"))
+
+    def test_gpt6_sol_and_luna_reasoning_efforts_are_forwarded(self):
+        for model_id in ("gpt-6-sol-excel", "gpt-6-luna-excel"):
+            for requested, expected in (
+                ("low", "low"),
+                ("medium", "medium"),
+                ("high", "high"),
+                ("xhigh", "xhigh"),
+                ("x-high", "xhigh"),
+                ("max", "medium"),
+            ):
+                with self.subTest(model_id=model_id, effort=requested):
+                    body = excel_upstream.prepare_responses_body(
+                        {
+                            "model": model_id,
+                            "input": "Hello",
+                            "reasoning": {"effort": requested},
+                        }
+                    )
+                    self.assertEqual(body["model"], model_id.removesuffix("-excel"))
+                    self.assertEqual(body["reasoning_effort"], expected)
 
     def test_task_identity_is_stable_for_a_conversation(self):
         source = {
@@ -1503,6 +1527,9 @@ class ExcelUpstreamTests(unittest.TestCase):
             [item["id"] for item in payload["data"]],
             [
                 "gpt-5.5",
+                "gpt-6-astra-excel",
+                "gpt-6-sol-excel",
+                "gpt-6-luna-excel",
                 "gpt-5.6-luna-excel",
                 "gpt-5.6-terra-excel",
                 "gpt-5.6-sol-excel",

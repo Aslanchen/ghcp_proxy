@@ -48,16 +48,11 @@ def _format_token_rate(value: object) -> str:
 
 
 def _model_token_pricing_description(model_name: str) -> str:
-    if model_name.endswith("-excel") and model_name in {
-        "gpt-6-astra-excel",
-        "gpt-5.6-luna-excel",
-        "gpt-5.6-terra-excel",
-        "gpt-5.6-sol-excel",
-    }:
-        return "ChatGPT subscription usage; not API-token billing"
     pricing = MODEL_PRICING.get(model_name)
     if not isinstance(pricing, Mapping):
         return "Token pricing unavailable"
+    if model_name.endswith("-excel") and pricing.get("credit_unit_usd") is not None:
+        return "ChatGPT subscription usage; not API-token billing"
     parts = [
         f"{_format_token_rate(pricing.get('input_per_million'))} input",
         f"{_format_token_rate(pricing.get('cached_input_per_million'))} cached",
@@ -1191,7 +1186,9 @@ class ProxyClientConfigService:
     ) -> list[str]:
         family_order = {"gpt": 0, "claude": 1, "gemini": 2, "grok": 3}
         preferred_order = {
-            "gpt-6-astra-excel": -27,
+            "gpt-6-astra-excel": -29,
+            "gpt-6-sol-excel": -28,
+            "gpt-6-luna-excel": -27,
             "gpt-5.6-sol-excel": -26,
             "gpt-5.6-terra-excel": -25,
             "gpt-5.6-luna-excel": -24,
