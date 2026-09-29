@@ -1518,15 +1518,30 @@ class ExcelUpstreamTests(unittest.TestCase):
             )
         )
 
-    def test_local_model_is_merged_once(self):
+    def test_entitled_local_models_are_merged_once(self):
         payload = excel_upstream.merge_local_models_payload(
-            {"object": "list", "data": [{"id": "gpt-5.5", "object": "model"}]}
+            {
+                "object": "list",
+                "data": [
+                    {"id": "gpt-5.5", "object": "model"},
+                    *[
+                        {"id": upstream_id, "object": "model"}
+                        for upstream_id in excel_upstream.EXCEL_MODEL_UPSTREAMS.values()
+                    ],
+                ],
+            }
         )
         payload = excel_upstream.merge_local_models_payload(payload)
         self.assertEqual(
             [item["id"] for item in payload["data"]],
             [
                 "gpt-5.5",
+                "gpt-6-astra",
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-5.6-luna",
+                "gpt-5.6-terra",
+                "gpt-5.6-sol",
                 "gpt-6-astra-excel",
                 "gpt-6-sol-excel",
                 "gpt-6-luna-excel",
@@ -1535,6 +1550,66 @@ class ExcelUpstreamTests(unittest.TestCase):
                 "gpt-5.6-sol-excel",
             ],
         )
+
+    def test_unentitled_local_models_are_not_merged(self):
+        payload = excel_upstream.merge_local_models_payload(
+            {
+                "object": "list",
+                "data": [
+                    {"id": upstream_id, "model_picker_enabled": False}
+                    for upstream_id in excel_upstream.EXCEL_MODEL_UPSTREAMS.values()
+                ],
+            }
+        )
+
+        self.assertEqual(
+            [item["id"] for item in payload["data"]],
+            list(excel_upstream.EXCEL_MODEL_UPSTREAMS.values()),
+        )
+
+    def test_locked_astra_is_not_merged_into_models_payload(self):
+        payload = excel_upstream.merge_local_models_payload(
+            {
+                "object": "list",
+                "data": [
+                    {"id": "gpt-6-astra", "model_picker_enabled": False},
+                    {"id": "gpt-5.6-sol", "object": "model"},
+                ],
+            }
+        )
+
+        model_ids = [item["id"] for item in payload["data"]]
+        self.assertNotIn("gpt-6-astra-excel", model_ids)
+        self.assertIn("gpt-5.6-sol-excel", model_ids)
+
+    def test_unlocked_astra_is_merged_into_models_payload(self):
+        payload = excel_upstream.merge_local_models_payload(
+            {
+                "object": "list",
+                "data": [
+                    {"id": "gpt-6-astra", "model_picker_enabled": True},
+                ],
+            }
+        )
+
+        self.assertIn(
+            "gpt-6-astra-excel",
+            [item["id"] for item in payload["data"]],
+        )
+
+    def test_unentitled_models_are_not_added_to_capabilities(self):
+        capabilities = excel_upstream.merge_local_model_capabilities({})
+
+        for model_id in excel_upstream.MODEL_IDS:
+            with self.subTest(model_id=model_id):
+                self.assertNotIn(model_id, capabilities)
+
+    def test_unlocked_astra_is_added_to_capabilities(self):
+        capabilities = excel_upstream.merge_local_model_capabilities(
+            {"gpt-6-astra": {"model_picker_enabled": True}}
+        )
+
+        self.assertIn("gpt-6-astra-excel", capabilities)
 
 class ExcelStreamTransformTests(unittest.TestCase):
     SOURCE_BODY = {

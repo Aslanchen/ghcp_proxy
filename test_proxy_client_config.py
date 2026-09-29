@@ -38,6 +38,11 @@ class ReasoningLevelTests(unittest.TestCase):
             ["low", "medium", "high", "xhigh", "max"],
         )
 
+    def test_empty_capability_fallback_does_not_expose_excel_aliases(self):
+        model_names = self.service._sorted_catalog_model_names(set(), {})
+
+        self.assertFalse(any(name.endswith("-excel") for name in model_names))
+
 
 class ExcelModelCatalogTests(unittest.TestCase):
     def setUp(self):
@@ -46,7 +51,12 @@ class ExcelModelCatalogTests(unittest.TestCase):
             codex_model_context_window=272_000,
             codex_model_auto_compact_token_limit=180_000,
         )
-        self.service._model_capabilities = lambda: excel_upstream.merge_local_model_capabilities({})
+        self.service._model_capabilities = lambda: excel_upstream.merge_local_model_capabilities(
+            {
+                upstream_id: {"model_picker_enabled": True}
+                for upstream_id in excel_upstream.EXCEL_MODEL_UPSTREAMS.values()
+            }
+        )
         self.service._model_routing_settings = lambda: {}
 
     def test_gpt6_excel_models_are_listed_first(self):
@@ -87,12 +97,12 @@ class ExcelModelCatalogTests(unittest.TestCase):
                     "ChatGPT subscription usage; not API-token billing",
                 )
 
-    def test_gpt6_excel_models_survive_missing_capabilities(self):
+    def test_gpt6_excel_models_require_matching_upstream_capabilities(self):
         self.service._model_capabilities = lambda: {}
         models = self.service._build_codex_model_catalog_payload()["models"]
         model_ids = {model["slug"] for model in models}
-        self.assertIn("gpt-6-sol-excel", model_ids)
-        self.assertIn("gpt-6-luna-excel", model_ids)
+        self.assertNotIn("gpt-6-sol-excel", model_ids)
+        self.assertNotIn("gpt-6-luna-excel", model_ids)
 
 
 if __name__ == "__main__":
