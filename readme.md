@@ -228,6 +228,14 @@ Check the terminal running `proxy.py`.
 
 If it exited, resolve the reported error and restart it. If another process is using port `8000`, stop the old GHCP Proxy instance or conflicting process first.
 
+### TLS certificate verification fails behind an enterprise proxy
+
+On macOS, the SDK runtime exports trusted certificates from the System and login
+Keychains and combines them with the bundled public CA set. Restart the proxy
+after changing enterprise certificate trust. Explicit `SSL_CERT_FILE`,
+`NODE_EXTRA_CA_CERTS`, or `CURL_CA_BUNDLE` settings are preserved and take
+precedence.
+
 ### GitHub sign-in does not complete
 
 Keep the dashboard open while completing the GitHub device-code flow with the account that has Copilot access.

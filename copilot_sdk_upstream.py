@@ -17,6 +17,9 @@ import importlib.util
 import json
 import os
 import re
+import ssl
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -98,6 +101,8 @@ _ENVIRONMENT_CONTEXT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _SDK_STATE_DIR = os.path.join(TOKEN_DIR, "copilot-sdk")
+_RUNTIME_CA_BUNDLE_NAME = "runtime-ca-bundle.pem"
+_RUNTIME_CA_ENV_VARS = ("SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")
 _SESSION_LEDGER_NAME = "proxy-sessions.json"
 _SESSION_ALIASES_NAME = "proxy-session-aliases.json"
 _SESSION_USAGE_NAME = "proxy-session-usage.json"
@@ -108,6 +113,8 @@ _client: Any = None
 _client_token: str | None = None
 _client_lock: asyncio.Lock | None = None
 _client_pruned = False
+_sdk_http_client: httpx.AsyncClient | None = None
+_sdk_http_client_lock = threading.Lock()
 
 
 def _read_session_ledger_unlocked() -> dict[str, float]:
@@ -867,10 +874,7 @@ async def _get_client():
             await _evict_all_live_sessions()
             await _close_websocket_pool()
             await _client.stop()
-        # The SDK's first-run runtime downloader uses urllib rather than httpx.
-        # Framework builds of Python on macOS commonly lack a usable system CA
-        # chain, while certifi is already an httpx dependency.
-        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        _configure_runtime_ca_bundle()
         os.makedirs(_SDK_STATE_DIR, exist_ok=True)
         _client = CopilotClient(
             github_token=token,
@@ -887,6 +891,119 @@ async def _get_client():
             await _prune_abandoned_sessions(_client)
             _client_pruned = True
         return _client
+
+
+def _write_runtime_ca_bundle(parts: list[str]) -> str | None:
+    content = "\n".join(part.strip() for part in parts if part.strip())
+    if not content:
+        return None
+    try:
+        os.makedirs(_SDK_STATE_DIR, exist_ok=True)
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix="runtime-ca-",
+            suffix=".tmp",
+            dir=_SDK_STATE_DIR,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="ascii") as handle:
+                handle.write(content)
+                handle.write("\n")
+            path = _state_path(_RUNTIME_CA_BUNDLE_NAME)
+            os.replace(temporary_path, path)
+            return path
+        except OSError:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            return None
+    except OSError:
+        return None
+
+
+def _macos_keychain_ca_bundle() -> str | None:
+    if sys.platform != "darwin":
+        return None
+
+    keychain_parts: list[str] = []
+    keychains = (
+        "/Library/Keychains/System.keychain",
+        os.path.expanduser("~/Library/Keychains/login.keychain-db"),
+    )
+    for keychain in keychains:
+        try:
+            result = subprocess.run(
+                ["security", "find-certificate", "-a", "-p", keychain],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            continue
+        if result.returncode == 0 and "BEGIN CERTIFICATE" in result.stdout:
+            keychain_parts.append(result.stdout)
+    if not keychain_parts:
+        return None
+
+    try:
+        with open(certifi.where(), encoding="ascii") as handle:
+            certifi_bundle = handle.read()
+    except OSError:
+        certifi_bundle = ""
+    return _write_runtime_ca_bundle([*keychain_parts, certifi_bundle])
+
+
+def _runtime_ca_bundle_path() -> str:
+    for variable in _RUNTIME_CA_ENV_VARS:
+        value = os.environ.get(variable, "").strip()
+        if value:
+            return value
+
+    keychain_bundle = _macos_keychain_ca_bundle()
+    if keychain_bundle:
+        return keychain_bundle
+    if sys.platform == "darwin":
+        print(
+            "Warning: could not export macOS Keychain certificates; using the default CA bundle.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    default_cafile = ssl.get_default_verify_paths().cafile
+    if default_cafile and os.path.isfile(default_cafile):
+        return default_cafile
+    return certifi.where()
+
+
+def _configure_runtime_ca_bundle() -> str:
+    """Give the native SDK runtime the same trusted roots as the host."""
+    bundle_path = _runtime_ca_bundle_path()
+    if not any(os.environ.get(variable, "").strip() for variable in _RUNTIME_CA_ENV_VARS):
+        for variable in _RUNTIME_CA_ENV_VARS:
+            os.environ[variable] = bundle_path
+    return bundle_path
+
+
+def _runtime_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context(cafile=_configure_runtime_ca_bundle())
+    if sys.platform == "darwin" and hasattr(ssl, "VERIFY_X509_STRICT"):
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
+
+
+def _get_sdk_http_client() -> httpx.AsyncClient:
+    global _sdk_http_client
+    if _sdk_http_client is not None:
+        return _sdk_http_client
+    with _sdk_http_client_lock:
+        if _sdk_http_client is None:
+            _sdk_http_client = httpx.AsyncClient(
+                timeout=None,
+                follow_redirects=False,
+                verify=_runtime_ssl_context(),
+                trust_env=True,
+            )
+    return _sdk_http_client
 
 
 def _reasoning_effort(body: dict) -> str | None:
@@ -1638,25 +1755,28 @@ class _UpstreamRequestHandler(CopilotRequestHandler):
         if record.get("restored_reasoning"):
             _reasoning_ledger.disable(session_id, model)
 
+    async def _send_upstream(self, request: httpx.Request) -> httpx.Response:
+        return await _get_sdk_http_client().send(request, stream=True)
+
     async def send_request(self, request: httpx.Request, ctx: Any) -> httpx.Response:
         if request.method != "POST":
-            return await super().send_request(request, ctx)
+            return await self._send_upstream(request)
         original = await request.aread()
         try:
             body = json.loads(original)
         except ValueError:
             body = None
         if not isinstance(body, dict) or "input" not in body:
-            return await super().send_request(request, ctx)
+            return await self._send_upstream(request)
         changed, record = self._prepare(ctx.session_id, body, "http", getattr(ctx, "interaction_type", None))
         _note_model_call(ctx.session_id, record)
         if not changed:
-            return await _observe_http_response(await super().send_request(request, ctx), record)
-        response = await super().send_request(_with_request_body(request, json.dumps(body).encode()), ctx)
+            return await _observe_http_response(await self._send_upstream(request), record)
+        response = await self._send_upstream(_with_request_body(request, json.dumps(body).encode()))
         if response.status_code not in {400, 422}:
             return await _observe_http_response(response, record)
         await response.aclose()
-        retry = await super().send_request(_with_request_body(request, original), ctx)
+        retry = await self._send_upstream(_with_request_body(request, original))
         if retry.status_code not in {400, 422}:
             self._reject(ctx.session_id, body.get("model"), record)
         return await _observe_http_response(retry, record)

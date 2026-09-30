@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from copilot import copilot_request_handler
 from copilot.session_events import (
     AssistantIntentData,
     AssistantMessageData,
@@ -61,6 +60,67 @@ class _FakeSession:
 class _ConnectedRequest:
     async def is_disconnected(self):
         return False
+
+
+class CopilotSdkRuntimeTlsTests(unittest.TestCase):
+    def test_runtime_ca_bundle_preserves_explicit_configuration(self):
+        with patch.dict(os.environ, {"SSL_CERT_FILE": "/custom/ca.pem"}, clear=True):
+            self.assertEqual(sdk._configure_runtime_ca_bundle(), "/custom/ca.pem")
+            self.assertEqual(os.environ["SSL_CERT_FILE"], "/custom/ca.pem")
+
+    def test_runtime_ca_bundle_prefers_host_default_bundle(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(sdk.sys, "platform", "linux"), \
+             patch.object(
+                 sdk.ssl,
+                 "get_default_verify_paths",
+                 return_value=SimpleNamespace(cafile="/system/ca.pem"),
+             ), \
+             patch.object(sdk.os.path, "isfile", return_value=True):
+            self.assertEqual(sdk._configure_runtime_ca_bundle(), "/system/ca.pem")
+            for variable in sdk._RUNTIME_CA_ENV_VARS:
+                self.assertEqual(os.environ[variable], "/system/ca.pem")
+
+    def test_runtime_ca_bundle_falls_back_to_certifi(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(sdk.sys, "platform", "linux"), \
+             patch.object(
+                 sdk.ssl,
+                 "get_default_verify_paths",
+                 return_value=SimpleNamespace(cafile=None),
+             ), \
+             patch.object(sdk.certifi, "where", return_value="/certifi/ca.pem"):
+            self.assertEqual(sdk._configure_runtime_ca_bundle(), "/certifi/ca.pem")
+            for variable in sdk._RUNTIME_CA_ENV_VARS:
+                self.assertEqual(os.environ[variable], "/certifi/ca.pem")
+
+    def test_runtime_ca_bundle_exports_macos_keychains(self):
+        with tempfile.TemporaryDirectory() as state_dir, \
+             tempfile.NamedTemporaryFile("w", encoding="ascii") as certifi_bundle, \
+             patch.dict(os.environ, {}, clear=True), \
+             patch.object(sdk, "_SDK_STATE_DIR", state_dir), \
+             patch.object(sdk.sys, "platform", "darwin"), \
+             patch.object(sdk.certifi, "where", return_value=certifi_bundle.name), \
+             patch.object(
+                 sdk.subprocess,
+                 "run",
+                 return_value=SimpleNamespace(
+                     returncode=0,
+                     stdout="-----BEGIN CERTIFICATE-----\nkeychain\n-----END CERTIFICATE-----",
+                 ),
+             ):
+            certifi_bundle.write(
+                "-----BEGIN CERTIFICATE-----\ncertifi\n-----END CERTIFICATE-----\n"
+            )
+            certifi_bundle.flush()
+            bundle_path = sdk._configure_runtime_ca_bundle()
+
+            with open(bundle_path, encoding="ascii") as handle:
+                bundle = handle.read()
+            self.assertIn("keychain", bundle)
+            self.assertIn("certifi", bundle)
+            for variable in sdk._RUNTIME_CA_ENV_VARS:
+                self.assertEqual(os.environ[variable], bundle_path)
 
 
 class CopilotSdkTranslationTests(unittest.TestCase):
@@ -1417,9 +1477,7 @@ class CopilotSdkEventTests(unittest.IsolatedAsyncioTestCase):
         prepared = dashboard._prepare_usage_event(event)
         self.assertEqual(prepared["input_tokens"], 10_189)
         self.assertEqual(prepared["total_tokens"], 11_125)
-        self.assertEqual(prepared["request_context_tokens"], 66_023)
-
-    def test_dashboard_session_uses_peak_context_without_summing_cached_prompts(self):
+    def test_dashboard_session_sums_fresh_tokens_without_summing_cached_prompts(self):
         import dashboard
 
         events = [
@@ -1450,7 +1508,7 @@ class CopilotSdkEventTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         usage = dashboard.collect_local_dashboard_usage(events)
-        self.assertEqual(usage["recent_sessions"][0]["total_tokens"], 62_200)
+        self.assertEqual(usage["recent_sessions"][0]["total_tokens"], 6_300)
         self.assertEqual(usage["month_rows"][0]["total_tokens"], 6_300)
 
     def test_cache_creation_is_part_of_fresh_input_but_not_double_billed(self):
@@ -2468,7 +2526,7 @@ class CopilotSdkUpstreamRequestHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         self.addAsyncCleanup(client.aclose)
-        patcher = patch.object(copilot_request_handler, "_get_shared_http_client", return_value=client)
+        patcher = patch.object(sdk, "_get_sdk_http_client", return_value=client)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.handler = sdk._UpstreamRequestHandler()

@@ -5169,7 +5169,16 @@ def fetch_copilot_model_capabilities() -> dict[str, dict]:
     headers = format_translation.build_copilot_headers(api_key)
     url = f"{api_base}/models"
     try:
-        with httpx.Client(timeout=_COPILOT_MODEL_CAPS_FETCH_TIMEOUT_SECONDS) as client:
+        # The model catalog is fetched through the same enterprise HTTPS
+        # middleman as the SDK.  httpx otherwise uses certifi alone here,
+        # which rejects the middleman's Keychain-installed CA and makes the
+        # caller see an empty capability set.  That empty set then removes
+        # Excel aliases from the generated model picker catalog.
+        with httpx.Client(
+            timeout=_COPILOT_MODEL_CAPS_FETCH_TIMEOUT_SECONDS,
+            verify=copilot_sdk_upstream._runtime_ssl_context(),
+            trust_env=True,
+        ) as client:
             response = client.get(url, headers=headers)
             response.raise_for_status()
             payload = response.json()
